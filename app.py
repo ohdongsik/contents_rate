@@ -1,0 +1,117 @@
+import streamlit as st
+import requests
+from bs4 import BeautifulSoup
+import re
+import openai
+
+# 1. 페이지 설정 및 커스텀 스타일
+st.set_page_config(page_title="AI 블로그 분석기 Pro", layout="wide")
+
+st.markdown("""
+    <style>
+    .main { background-color: #f9f9fb; }
+    .stTextArea textarea { font-size: 14px; }
+    .status-card { background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    </style>
+    """, unsafe_allow_html=True)
+
+# 2. 본문 추출 로직 (네이버 iframe 대응)
+def get_blog_content(url):
+    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
+    try:
+        if "blog.naver.com" in url:
+            res = requests.get(url, headers=headers)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            ifr = soup.find('iframe', id='mainFrame')
+            if ifr:
+                real_url = "https://blog.naver.com" + ifr['src']
+                res = requests.get(real_url, headers=headers)
+                soup = BeautifulSoup(res.text, 'html.parser')
+                content = soup.find('div', class_='se-main-container') or soup.find('div', id='postViewArea')
+                return content, soup.title.string
+        else:
+            res = requests.get(url, headers=headers)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            return soup.body, soup.title.string
+    except:
+        return None, None
+    return None, None
+
+# 3. AI 분석 함수 (사용자 프롬프트 반영)
+def get_ai_evaluation(text, api_key, user_prompt):
+    if not api_key:
+        return "⚠️ 사이드바에 OpenAI API 키를 입력해주세요."
+    
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        # 사용자가 입력한 프롬프트를 시스템 메시지로 전달
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": user_prompt},
+                {"role": "user", "content": f"다음 블로그 본문을 분석해라:\n\n{text[:2000]}"}
+            ],
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"❌ AI 분석 중 오류가 발생했습니다: {str(e)}"
+
+# --- UI 레이아웃 ---
+st.title("🤖 AI 블로그 분석기 Pro")
+st.write("블로그 URL을 입력하고, AI에게 어떤 관점으로 분석할지 직접 명령해 보세요.")
+
+# 사이드바 설정
+with st.sidebar:
+    st.header("🔑 설정")
+    api_key = st.text_input("OpenAI API Key", type="password")
+    st.divider()
+    st.markdown("### ✍️ AI 분석 프롬프트 설정")
+    default_prompt = """너는 10년 차 전문 블로그 컨설턴트야. 
+아래 내용을 바탕으로 분석 리포트를 작성해줘:
+1. 콘텐츠의 전문성 (100점 만점)
+2. 독자가 읽기에 가독성이 좋은지 평가
+3. 이 글이 검색 상단에 노출되기에 유리한 구조인지 조언
+4. 개선이 필요한 부분 3가지 요약"""
+    
+    user_custom_prompt = st.text_area(
+        "AI에게 내릴 명령어를 수정하세요:",
+        value=default_prompt,
+        height=300
+    )
+
+# 메인 입력창
+url_input = st.text_input("분석할 블로그 URL", placeholder="https://blog.naver.com/...")
+
+if st.button("실시간 퀄리티 진단 시작"):
+    if not url_input:
+        st.error("URL을 입력해 주세요.")
+    else:
+        with st.spinner('블로그 데이터를 수집하고 AI와 대화 중입니다...'):
+            content, title = get_blog_content(url_input)
+            
+            if content:
+                text = content.get_text(separator=' ', strip=True)
+                img_count = len(content.find_all('img'))
+                char_count = len(text)
+                
+                # 상단 기본 지표
+                st.subheader(f"📌 분석 대상: {title}")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("📸 이미지 수", f"{img_count}개")
+                with c2:
+                    st.metric("✍️ 글자 수", f"{char_count:,}자")
+                with c3:
+                    st.metric("🎯 분석 상태", "완료")
+                
+                # AI 분석 결과
+                st.markdown("---")
+                st.subheader("📝 AI 전문 진단 리포트")
+                result = get_ai_evaluation(text, api_key, user_custom_prompt)
+                st.markdown(result)
+                
+                with st.expander("수집된 본문 텍스트 확인"):
+                    st.write(text)
+            else:
+                st.error("본문 내용을 가져올 수 없습니다. 비공개 글이거나 URL이 올바른지 확인하세요.")
