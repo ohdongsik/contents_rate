@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: sally-contents-rate
+    env: python
+    plan: free
+    buildCommand: "echo no-build"
+    startCommand: "python app.py 0.0.0.0 $PORT"
+    autoDeploy: true
