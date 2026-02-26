@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import html
+import json
 import math
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict, List, Tuple
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
+
+try:
+    import requests
+except Exception:  # pragma: no cover
+    requests = None
 
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", "8000"))
@@ -51,15 +58,40 @@ def safe_int(value: str | None) -> int | None:
 
 def fetch_html(url: str) -> Tuple[str, List[str]]:
     notes: List[str] = []
-    try:
-        req = Request(url, headers={"User-Agent": USER_AGENT})
-        with urlopen(req, timeout=10) as resp:
-            raw = resp.read()
-            charset = resp.headers.get_content_charset() or "utf-8"
-            return raw.decode(charset, errors="replace"), notes
-    except Exception as exc:
-        notes.append(f"URL 수집 실패로 제한된 평가를 수행했습니다: {exc}")
-        return "", notes
+    attempts = [
+        {"User-Agent": USER_AGENT, "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8"},
+        {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
+    ]
+
+    if requests is not None:
+        for idx, headers in enumerate(attempts, start=1):
+            try:
+                resp = requests.get(
+                    url,
+                    headers=headers,
+                    timeout=12,
+                    allow_redirects=True,
+                )
+                if resp.ok and resp.text:
+                    return resp.text, notes
+                notes.append(f"수집 시도 {idx} 실패(HTTP {resp.status_code})")
+            except Exception as exc:
+                notes.append(f"수집 시도 {idx} 실패: {exc}")
+            time.sleep(0.3)
+
+    for idx, headers in enumerate(attempts, start=1):
+        try:
+            req = Request(url, headers=headers)
+            with urlopen(req, timeout=12) as resp:
+                raw = resp.read()
+                charset = resp.headers.get_content_charset() or "utf-8"
+                return raw.decode(charset, errors="replace"), notes
+        except Exception as exc:
+            notes.append(f"보조 수집 시도 {idx} 실패: {exc}")
+        time.sleep(0.3)
+
+    notes.append("URL 수집 실패로 제한된 평가를 수행했습니다.")
+    return "", notes
 
 
 def strip_tags(text: str) -> str:
@@ -82,6 +114,22 @@ def parse_images(html_text: str) -> List[Dict[str, object]]:
         width = safe_int(extract_attr(tag, "width"))
         height = safe_int(extract_attr(tag, "height"))
         images.append({"src": src, "alt": alt, "width": width, "height": height})
+
+        srcset = extract_attr(tag, "srcset") or ""
+        if srcset:
+            for chunk in srcset.split(","):
+                part = chunk.strip().split(" ")[0].strip()
+                if part and not any(img["src"] == part for img in images):
+                    images.append({"src": part, "alt": alt, "width": None, "height": None})
+
+    og_images = re.findall(
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        html_text,
+        flags=re.IGNORECASE,
+    )
+    for src in og_images[:20]:
+        if not any(img["src"] == src for img in images):
+            images.append({"src": src, "alt": "", "width": None, "height": None})
     return images
 
 
@@ -111,6 +159,47 @@ def extract_count(html_text: str, keys: List[str]) -> int | None:
     return None
 
 
+def extract_meta(html_text: str, key: str) -> str:
+    patterns = [
+        rf'<meta[^>]+property=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']',
+        rf'<meta[^>]+name=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html_text, flags=re.IGNORECASE)
+        if match:
+            return html.unescape(match.group(1)).strip()
+    return ""
+
+
+def extract_json_ld_chunks(html_text: str) -> List[dict]:
+    chunks = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>([\s\S]*?)</script>',
+        html_text,
+        flags=re.IGNORECASE,
+    )
+    parsed: List[dict] = []
+    for chunk in chunks:
+        text = chunk.strip()
+        if not text:
+            continue
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                parsed.append(obj)
+            elif isinstance(obj, list):
+                parsed.extend([x for x in obj if isinstance(x, dict)])
+        except Exception:
+            continue
+    return parsed
+
+
+def coalesce(*values: object) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def parse_common(html_text: str) -> Dict[str, object]:
     if not html_text:
         return {
@@ -120,6 +209,10 @@ def parse_common(html_text: str) -> Dict[str, object]:
             "hashtags": [],
             "likes": None,
             "comments": None,
+            "title": "",
+            "description": "",
+            "json_ld_count": 0,
+            "word_count": 0,
         }
 
     text = strip_tags(html_text)
@@ -128,6 +221,34 @@ def parse_common(html_text: str) -> Dict[str, object]:
     hashtags = parse_hashtags(text)
     likes = extract_count(html_text, ["like_count", "likes", "좋아요"])
     comments = extract_count(html_text, ["comment_count", "comments", "댓글"])
+    json_ld = extract_json_ld_chunks(html_text)
+
+    title_match = re.search(r"<title>([\s\S]*?)</title>", html_text, flags=re.IGNORECASE)
+    title_tag = html.unescape(title_match.group(1)).strip() if title_match else ""
+    title = coalesce(extract_meta(html_text, "og:title"), title_tag)
+    description = coalesce(
+        extract_meta(html_text, "og:description"),
+        extract_meta(html_text, "description"),
+    )
+
+    for obj in json_ld:
+        article_body = obj.get("articleBody")
+        caption = obj.get("caption")
+        desc = obj.get("description")
+        keywords = obj.get("keywords")
+        for candidate in [article_body, caption, desc]:
+            if isinstance(candidate, str) and candidate.strip() and candidate not in text:
+                text = f"{text} {candidate.strip()}".strip()
+        if isinstance(keywords, str):
+            hashtags.extend([w.strip().lstrip("#") for w in keywords.split(",") if w.strip()])
+
+    hashtags = [h for h in hashtags if len(h) >= 2]
+    hashtags = list(dict.fromkeys(hashtags))[:80]
+
+    if likes is None:
+        likes = extract_count(html_text, ["edge_media_preview_like", "likeCount", "reaction_count"])
+    if comments is None:
+        comments = extract_count(html_text, ["edge_media_to_comment", "commentCount"])
 
     return {
         "text": text,
@@ -136,6 +257,10 @@ def parse_common(html_text: str) -> Dict[str, object]:
         "hashtags": hashtags,
         "likes": likes,
         "comments": comments,
+        "title": title,
+        "description": description,
+        "json_ld_count": len(json_ld),
+        "word_count": len(text.split()),
     }
 
 
@@ -157,7 +282,14 @@ def score_label(score: float) -> str:
 
 
 def build_item_review(item: str, score: float, basis: str) -> str:
-    return f"{score_label(score)} ({score:.1f}/5). {basis}"
+    diagnosis = {
+        "매우 우수": "핵심 지표에서 높은 신뢰도를 보였습니다",
+        "양호": "기본 완성도는 충분하지만 더 정교한 보강 여지가 있습니다",
+        "보통": "품질이 균일하지 않아 강점과 약점이 함께 관찰됩니다",
+        "개선 필요": "현재 데이터 기준으로 보완 우선순위가 높은 상태입니다",
+    }
+    label = score_label(score)
+    return f"{label} ({score:.1f}/5). {diagnosis[label]}. {basis}"
 
 
 def detect_place_clues(text: str) -> str:
@@ -186,6 +318,8 @@ def build_blog_overview(parsed: Dict[str, object]) -> List[str]:
     text = str(parsed["text"])
     images = parsed["images"]
     image_with_alt = sum(1 for img in images if str(img.get("alt") or "").strip())
+    title = str(parsed.get("title") or "")
+    desc = str(parsed.get("description") or "")
     image_types = "일반 이미지"
     if images:
         hi_res = sum(
@@ -198,8 +332,9 @@ def build_blog_overview(parsed: Dict[str, object]) -> List[str]:
         )
         image_types = f"고해상도 추정 {hi_res}장 / 전체 {len(images)}장"
     return [
+        f"페이지 제목/설명: {snippet(coalesce(title, desc), 120)}",
         f"포스팅 내용 요약: {snippet(text, 200)}",
-        f"첨부 이미지 요약: {image_types}, 대체텍스트(alt) 포함 {image_with_alt}장",
+        f"첨부 이미지 요약: {image_types}, 대체텍스트(alt) 포함 {image_with_alt}장, 구조화데이터(JSON-LD) {parsed.get('json_ld_count', 0)}개",
     ]
 
 
@@ -207,8 +342,11 @@ def build_insta_overview(parsed: Dict[str, object]) -> List[str]:
     text = str(parsed["text"])
     images = parsed["images"]
     hashtags = parsed["hashtags"]
+    title = str(parsed.get("title") or "")
+    desc = str(parsed.get("description") or "")
     portrait_clues = len(re.findall(r"(portrait|face|selfie|인물|셀카)", text, flags=re.IGNORECASE))
     return [
+        f"포스트 핵심 문구: {snippet(coalesce(desc, title, text), 120)}",
         f"이미지 배경 장소: {detect_place_clues(text)}",
         f"인물 전반 평가: 인물/셀카 단서 {portrait_clues}건, 이미지 수 {len(images)}장 기반으로 시각 연출 품질을 판정했습니다.",
         f"제품 주목성: {detect_product_focus(text, hashtags)}",
@@ -219,31 +357,42 @@ def build_blog_reviews(scores: Dict[str, float], parsed: Dict[str, object]) -> D
     text = str(parsed["text"])
     images = parsed["images"]
     links = int(parsed["links"])
+    words = int(parsed.get("word_count", 0))
+    json_ld_count = int(parsed.get("json_ld_count", 0))
     return {
         "이미지 퀄리티": build_item_review(
             "이미지 퀄리티",
             scores["이미지 퀄리티"],
-            f"이미지 {len(images)}장, alt 포함 {sum(1 for i in images if i.get('alt'))}장을 반영했습니다.",
+            (
+                f"이미지 {len(images)}장을 확인했고 alt 텍스트 {sum(1 for i in images if i.get('alt'))}장,"
+                " srcset/og:image 후보까지 포함해 시각 자료 밀도와 설명력을 평가했습니다."
+            ),
         ),
         "진정성/객관성": build_item_review(
             "진정성/객관성",
             scores["진정성/객관성"],
-            f"주관/객관 단어 사용과 참고 링크 {links}개를 기반으로 균형감을 평가했습니다.",
+            (
+                f"본문 약 {words}단어, 참고 링크 {links}개, 주관/객관 단어 균형을 근거로"
+                " 개인 경험과 정보 전달의 균형도를 판정했습니다."
+            ),
         ),
         "내러티브": build_item_review(
             "내러티브",
             scores["내러티브"],
-            f"문장 구조와 전개 단어(처음/다음/정리 등) 포함 여부를 기준으로 판단했습니다.",
+            "문장 길이 분포, 전개 접속어(처음/다음/결론) 존재, 도입-전개-정리 흐름의 일관성을 종합했습니다.",
         ),
         "맞춤법/표기": build_item_review(
             "맞춤법/표기",
             scores["맞춤법/표기"],
-            "반복 문장부호, 비정상 공백, 자모 반복 패턴을 기준으로 표기 안정성을 평가했습니다.",
+            "반복 문장부호, 비정상 공백, 자모 반복 패턴과 문장 가독성을 함께 반영해 표기 안정성을 계산했습니다.",
         ),
         "정보 사실성": build_item_review(
             "정보 사실성",
             scores["정보 사실성"],
-            f"숫자/날짜/출처 단어 및 링크 {links}개를 근거로 사실성 단서를 확인했습니다.",
+            (
+                f"숫자/날짜/출처 단서, 링크 {links}개, JSON-LD {json_ld_count}개를 근거로"
+                " 검증 가능한 정보의 비율을 평가했습니다."
+            ),
         ),
     }
 
@@ -253,26 +402,41 @@ def build_insta_reviews(scores: Dict[str, float], parsed: Dict[str, object]) -> 
     hashtags = parsed["hashtags"]
     likes = parsed["likes"]
     comments = parsed["comments"]
+    title = str(parsed.get("title") or "")
+    desc = str(parsed.get("description") or "")
+    text_hint = coalesce(desc, title)
     return {
         "피사체 퀄리티": build_item_review(
             "피사체 퀄리티",
             scores["피사체 퀄리티"],
-            f"이미지 {len(images)}장의 수량과 해상도/alt 단서를 반영했습니다.",
+            (
+                f"이미지 {len(images)}장의 수량, 해상도 단서, 대체텍스트 구성도를 종합해"
+                " 프레이밍/피사체 선명도를 간접 추정했습니다."
+            ),
         ),
         "인물 표현 점수": build_item_review(
             "인물 표현 점수",
             scores["인물 표현 점수"],
-            "인물/셀카 관련 텍스트 단서와 이미지 설명 정보를 기반으로 시각 표현 품질을 평가했습니다.",
+            (
+                "인물/셀카 키워드, 포스트 설명문, 이미지 설명을 결합해"
+                " 인물 중심 연출의 일관성과 전달력을 판단했습니다."
+            ),
         ),
         "해시태그 희소성": build_item_review(
             "해시태그 희소성",
             scores["해시태그 희소성"],
-            f"해시태그 {len(hashtags)}개 중 고유 비율과 평균 길이를 기준으로 산정했습니다.",
+            (
+                f"해시태그 {len(hashtags)}개의 고유 비율과 길이, 범용 태그 편중도를 바탕으로"
+                " 검색 경쟁 회피 가능성을 평가했습니다."
+            ),
         ),
         "좋아요/댓글 반응": build_item_review(
             "좋아요/댓글 반응",
             scores["좋아요/댓글 반응"],
-            f"좋아요 {likes if likes is not None else '미확인'}, 댓글 {comments if comments is not None else '미확인'} 데이터를 반영했습니다.",
+            (
+                f"좋아요 {likes if likes is not None else '미확인'}, 댓글 {comments if comments is not None else '미확인'}를"
+                f" 반영했고, 설명문 단서('{snippet(text_hint, 40)}')와의 적합도도 참고했습니다."
+            ),
         ),
     }
 
