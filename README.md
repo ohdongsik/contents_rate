@@ -7,18 +7,20 @@ URL을 입력하면 `Sally`가 동일한 루브릭으로 콘텐츠를 평가하�
 - 네이버 블로그 포스팅
 - 인스타그램 피드
 
-## 실행 방법
+## 로컬 실행 방법 (Streamlit)
 ```bash
-python3 app.py
+pip install -r requirements.txt
+streamlit run streamlit_app.py
 ```
 
-브라우저에서 아래 주소로 접속:
-- `http://127.0.0.1:8000`
+브라우저에서 Streamlit이 출력한 주소로 접속합니다.
 
-호스트/포트를 바꿔 실행하려면:
-```bash
-python3 app.py 127.0.0.1 8000
-```
+## Streamlit Cloud 배포
+1. Streamlit 계정에서 `New app` 클릭
+2. Repository: `ohdongsik/contents_rate`
+3. Branch: `main`
+4. Main file path: `streamlit_app.py`
+5. `Deploy` 실행
 
 ## 평가 기준
 ### 1) 블로그 포스팅
@@ -35,7 +37,7 @@ python3 app.py 127.0.0.1 8000
 - 좋아요/댓글 반응
 
 ## 구현 방식
-- 외부 패키지 없이 순수 파이썬 표준 라이브러리로 구성
+- Streamlit UI + 파이썬 평가 엔진
 - URL HTML을 수집한 뒤 텍스트/이미지/해시태그/반응값(수집 가능 시) 파싱
 - 항목별 휴리스틱 점수(1~5) 계산 후 평균 별점 산출
 - 평균 구간에 따라 Sally 총평 자동 생성

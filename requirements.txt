@@ -1,2 +1,1 @@
-# No external dependencies required.
-# Run: python3 app.py
+streamlit==1.42.2
