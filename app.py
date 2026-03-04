@@ -26,6 +26,21 @@ USER_AGENT = (
     "Chrome/122.0.0.0 Safari/537.36"
 )
 
+BLOG_RUBRIC = [
+    "등록한 이미지의 퀄리티",
+    "작성한 블로그 포스팅 내용의 진정성 및 객관적 평가",
+    "작성한 글의 내러티브 평가",
+    "작성한 글의 맞춤법, 띄어쓰기등 표기 오류",
+    "작성한 글의 정보의 사실성",
+]
+
+INSTAGRAM_RUBRIC = [
+    "등록한 이미지의 피사체의 퀄리티",
+    "등록한 이미지의 인물의 외모 점수",
+    "등록한 해시태그의 희소성",
+    "등록한 인스타그램 계정의 좋아요, 댓글등 반응",
+]
+
 
 @dataclass
 class EvalResult:
@@ -360,35 +375,35 @@ def build_blog_reviews(scores: Dict[str, float], parsed: Dict[str, object]) -> D
     words = int(parsed.get("word_count", 0))
     json_ld_count = int(parsed.get("json_ld_count", 0))
     return {
-        "이미지 퀄리티": build_item_review(
-            "이미지 퀄리티",
-            scores["이미지 퀄리티"],
+        BLOG_RUBRIC[0]: build_item_review(
+            BLOG_RUBRIC[0],
+            scores[BLOG_RUBRIC[0]],
             (
                 f"이미지 {len(images)}장을 확인했고 alt 텍스트 {sum(1 for i in images if i.get('alt'))}장,"
                 " srcset/og:image 후보까지 포함해 시각 자료 밀도와 설명력을 평가했습니다."
             ),
         ),
-        "진정성/객관성": build_item_review(
-            "진정성/객관성",
-            scores["진정성/객관성"],
+        BLOG_RUBRIC[1]: build_item_review(
+            BLOG_RUBRIC[1],
+            scores[BLOG_RUBRIC[1]],
             (
                 f"본문 약 {words}단어, 참고 링크 {links}개, 주관/객관 단어 균형을 근거로"
                 " 개인 경험과 정보 전달의 균형도를 판정했습니다."
             ),
         ),
-        "내러티브": build_item_review(
-            "내러티브",
-            scores["내러티브"],
+        BLOG_RUBRIC[2]: build_item_review(
+            BLOG_RUBRIC[2],
+            scores[BLOG_RUBRIC[2]],
             "문장 길이 분포, 전개 접속어(처음/다음/결론) 존재, 도입-전개-정리 흐름의 일관성을 종합했습니다.",
         ),
-        "맞춤법/표기": build_item_review(
-            "맞춤법/표기",
-            scores["맞춤법/표기"],
+        BLOG_RUBRIC[3]: build_item_review(
+            BLOG_RUBRIC[3],
+            scores[BLOG_RUBRIC[3]],
             "반복 문장부호, 비정상 공백, 자모 반복 패턴과 문장 가독성을 함께 반영해 표기 안정성을 계산했습니다.",
         ),
-        "정보 사실성": build_item_review(
-            "정보 사실성",
-            scores["정보 사실성"],
+        BLOG_RUBRIC[4]: build_item_review(
+            BLOG_RUBRIC[4],
+            scores[BLOG_RUBRIC[4]],
             (
                 f"숫자/날짜/출처 단서, 링크 {links}개, JSON-LD {json_ld_count}개를 근거로"
                 " 검증 가능한 정보의 비율을 평가했습니다."
@@ -406,33 +421,33 @@ def build_insta_reviews(scores: Dict[str, float], parsed: Dict[str, object]) -> 
     desc = str(parsed.get("description") or "")
     text_hint = coalesce(desc, title)
     return {
-        "피사체 퀄리티": build_item_review(
-            "피사체 퀄리티",
-            scores["피사체 퀄리티"],
+        INSTAGRAM_RUBRIC[0]: build_item_review(
+            INSTAGRAM_RUBRIC[0],
+            scores[INSTAGRAM_RUBRIC[0]],
             (
                 f"이미지 {len(images)}장의 수량, 해상도 단서, 대체텍스트 구성도를 종합해"
                 " 프레이밍/피사체 선명도를 간접 추정했습니다."
             ),
         ),
-        "인물 표현 점수": build_item_review(
-            "인물 표현 점수",
-            scores["인물 표현 점수"],
+        INSTAGRAM_RUBRIC[1]: build_item_review(
+            INSTAGRAM_RUBRIC[1],
+            scores[INSTAGRAM_RUBRIC[1]],
             (
                 "인물/셀카 키워드, 포스트 설명문, 이미지 설명을 결합해"
                 " 인물 중심 연출의 일관성과 전달력을 판단했습니다."
             ),
         ),
-        "해시태그 희소성": build_item_review(
-            "해시태그 희소성",
-            scores["해시태그 희소성"],
+        INSTAGRAM_RUBRIC[2]: build_item_review(
+            INSTAGRAM_RUBRIC[2],
+            scores[INSTAGRAM_RUBRIC[2]],
             (
                 f"해시태그 {len(hashtags)}개의 고유 비율과 길이, 범용 태그 편중도를 바탕으로"
                 " 검색 경쟁 회피 가능성을 평가했습니다."
             ),
         ),
-        "좋아요/댓글 반응": build_item_review(
-            "좋아요/댓글 반응",
-            scores["좋아요/댓글 반응"],
+        INSTAGRAM_RUBRIC[3]: build_item_review(
+            INSTAGRAM_RUBRIC[3],
+            scores[INSTAGRAM_RUBRIC[3]],
             (
                 f"좋아요 {likes if likes is not None else '미확인'}, 댓글 {comments if comments is not None else '미확인'}를"
                 f" 반영했고, 설명문 단서('{snippet(text_hint, 40)}')와의 적합도도 참고했습니다."
@@ -579,7 +594,7 @@ def build_summary(content_type: str, avg: float, scores: Dict[str, float]) -> st
     strongest = max(scores, key=scores.get)
 
     return (
-        f"Sally 평가 결과, {tone} "
+        f"Sally 평가 결과(요청하신 기준 직접 적용), {tone} "
         f"강점은 '{strongest}' 항목이고 개선 우선순위는 '{weakest}' 항목입니다. "
         f"유형: {content_type}"
     )
@@ -591,10 +606,10 @@ def evaluate(content_type: str, url: str) -> EvalResult:
 
     if content_type == "instagram":
         scores = {
-            "피사체 퀄리티": round_half(score_insta_subject(parsed["images"])),
-            "인물 표현 점수": round_half(score_insta_appearance(parsed["text"], parsed["images"])),
-            "해시태그 희소성": round_half(score_insta_hashtag_rarity(parsed["hashtags"])),
-            "좋아요/댓글 반응": round_half(score_insta_engagement(parsed["likes"], parsed["comments"])),
+            INSTAGRAM_RUBRIC[0]: round_half(score_insta_subject(parsed["images"])),
+            INSTAGRAM_RUBRIC[1]: round_half(score_insta_appearance(parsed["text"], parsed["images"])),
+            INSTAGRAM_RUBRIC[2]: round_half(score_insta_hashtag_rarity(parsed["hashtags"])),
+            INSTAGRAM_RUBRIC[3]: round_half(score_insta_engagement(parsed["likes"], parsed["comments"])),
         }
         reviews = build_insta_reviews(scores, parsed)
         overview = build_insta_overview(parsed)
@@ -603,11 +618,11 @@ def evaluate(content_type: str, url: str) -> EvalResult:
         return EvalResult("인스타그램 피드", url, scores, reviews, overview, avg, summary, notes)
 
     scores = {
-        "이미지 퀄리티": round_half(score_image_quality(parsed["images"])),
-        "진정성/객관성": round_half(score_blog_sincerity_objectivity(parsed["text"], parsed["links"])),
-        "내러티브": round_half(score_blog_narrative(parsed["text"])),
-        "맞춤법/표기": round_half(score_blog_spelling(parsed["text"])),
-        "정보 사실성": round_half(score_blog_factuality(parsed["text"], parsed["links"])),
+        BLOG_RUBRIC[0]: round_half(score_image_quality(parsed["images"])),
+        BLOG_RUBRIC[1]: round_half(score_blog_sincerity_objectivity(parsed["text"], parsed["links"])),
+        BLOG_RUBRIC[2]: round_half(score_blog_narrative(parsed["text"])),
+        BLOG_RUBRIC[3]: round_half(score_blog_spelling(parsed["text"])),
+        BLOG_RUBRIC[4]: round_half(score_blog_factuality(parsed["text"], parsed["links"])),
     }
     reviews = build_blog_reviews(scores, parsed)
     overview = build_blog_overview(parsed)

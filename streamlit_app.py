@@ -7,7 +7,7 @@ from app import evaluate
 st.set_page_config(page_title="Sally 콘텐츠 평가기", page_icon="⭐", layout="centered")
 
 st.title("Sally 콘텐츠 평가기")
-st.caption("URL을 입력하면 동일한 루브릭으로 항목별 별점(1~5), 심사평, 평균 별점을 계산합니다.")
+st.caption("URL을 입력하면 요청하신 평가기준으로 항목별 별점(1~5), 심사평, 평균 별점을 계산합니다.")
 
 content_type_label = st.selectbox(
     "콘텐츠 유형",
