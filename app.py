@@ -286,6 +286,15 @@ def snippet(text: str, limit: int = 180) -> str:
     return clean[:limit].rstrip() + "..."
 
 
+def keyword_hits(text: str, words: List[str]) -> int:
+    low = text.lower()
+    return sum(1 for w in words if w.lower() in low)
+
+
+def ratio(n: int, d: int) -> float:
+    return 0.0 if d <= 0 else n / d
+
+
 def score_label(score: float) -> str:
     if score >= 4.5:
         return "매우 우수"
@@ -296,7 +305,7 @@ def score_label(score: float) -> str:
     return "개선 필요"
 
 
-def build_item_review(item: str, score: float, basis: str) -> str:
+def build_item_review(item: str, score: float, basis: str, action: str = "") -> str:
     diagnosis = {
         "매우 우수": "핵심 지표에서 높은 신뢰도를 보였습니다",
         "양호": "기본 완성도는 충분하지만 더 정교한 보강 여지가 있습니다",
@@ -304,7 +313,32 @@ def build_item_review(item: str, score: float, basis: str) -> str:
         "개선 필요": "현재 데이터 기준으로 보완 우선순위가 높은 상태입니다",
     }
     label = score_label(score)
-    return f"{label} ({score:.1f}/5). {diagnosis[label]}. {basis}"
+    core = f"{label} ({score:.1f}/5). {diagnosis[label]}. {basis}"
+    if action:
+        return f"{core} 개선 제안: {action}"
+    return core
+
+
+def infer_audience(text: str, hashtags: List[str]) -> str:
+    hobby = keyword_hits(text, ["후기", "리뷰", "맛집", "여행", "카페", "OOTD", "데일리"])
+    pro = keyword_hits(text, ["분석", "비교", "가이드", "전략", "인사이트", "트렌드"])
+    tags = " ".join([h.lower() for h in hashtags])
+    if pro >= 3:
+        return "정보 탐색형 독자(비교/검증 중심)"
+    if hobby >= 3 or any(k in tags for k in ["daily", "ootd", "travel", "food"]):
+        return "라이프스타일 소비자(경험/감성 중심)"
+    return "혼합형 독자층(정보+감성 동시 소비)"
+
+
+def content_maturity(parsed: Dict[str, object]) -> str:
+    words = int(parsed.get("word_count", 0))
+    images = len(parsed.get("images", []))
+    links = int(parsed.get("links", 0))
+    if words >= 600 and images >= 4 and links >= 2:
+        return "완성도 높은 롱폼 구조"
+    if words >= 250 and images >= 2:
+        return "표준형 콘텐츠 구조"
+    return "경량형 콘텐츠 구조"
 
 
 def detect_place_clues(text: str) -> str:
@@ -335,6 +369,8 @@ def build_blog_overview(parsed: Dict[str, object]) -> List[str]:
     image_with_alt = sum(1 for img in images if str(img.get("alt") or "").strip())
     title = str(parsed.get("title") or "")
     desc = str(parsed.get("description") or "")
+    audience = infer_audience(text, parsed.get("hashtags", []))
+    maturity = content_maturity(parsed)
     image_types = "일반 이미지"
     if images:
         hi_res = sum(
@@ -349,6 +385,7 @@ def build_blog_overview(parsed: Dict[str, object]) -> List[str]:
     return [
         f"페이지 제목/설명: {snippet(coalesce(title, desc), 120)}",
         f"포스팅 내용 요약: {snippet(text, 200)}",
+        f"콘텐츠 포지셔닝: {audience}, 포맷 성숙도: {maturity}",
         f"첨부 이미지 요약: {image_types}, 대체텍스트(alt) 포함 {image_with_alt}장, 구조화데이터(JSON-LD) {parsed.get('json_ld_count', 0)}개",
     ]
 
@@ -359,9 +396,11 @@ def build_insta_overview(parsed: Dict[str, object]) -> List[str]:
     hashtags = parsed["hashtags"]
     title = str(parsed.get("title") or "")
     desc = str(parsed.get("description") or "")
+    audience = infer_audience(text, hashtags)
     portrait_clues = len(re.findall(r"(portrait|face|selfie|인물|셀카)", text, flags=re.IGNORECASE))
     return [
         f"포스트 핵심 문구: {snippet(coalesce(desc, title, text), 120)}",
+        f"타깃 오디언스 추정: {audience}",
         f"이미지 배경 장소: {detect_place_clues(text)}",
         f"인물 전반 평가: 인물/셀카 단서 {portrait_clues}건, 이미지 수 {len(images)}장 기반으로 시각 연출 품질을 판정했습니다.",
         f"제품 주목성: {detect_product_focus(text, hashtags)}",
@@ -374,40 +413,58 @@ def build_blog_reviews(scores: Dict[str, float], parsed: Dict[str, object]) -> D
     links = int(parsed["links"])
     words = int(parsed.get("word_count", 0))
     json_ld_count = int(parsed.get("json_ld_count", 0))
+    sentence_count, avg_len = sentence_stats(text)
+    opinion_hits = keyword_hits(text, ["느꼈", "생각", "체감", "개인적", "솔직히"])
+    evidence_hits = keyword_hits(text, ["근거", "출처", "통계", "공식", "실험", "비교"])
+    cta_hits = keyword_hits(text, ["추천", "구매", "방문", "문의", "신청", "클릭"])
+    emotional_hits = keyword_hits(text, ["감동", "만족", "아쉬움", "행복", "놀라", "최고"])
+
     return {
         BLOG_RUBRIC[0]: build_item_review(
             BLOG_RUBRIC[0],
             scores[BLOG_RUBRIC[0]],
             (
-                f"이미지 {len(images)}장을 확인했고 alt 텍스트 {sum(1 for i in images if i.get('alt'))}장,"
-                " srcset/og:image 후보까지 포함해 시각 자료 밀도와 설명력을 평가했습니다."
+                f"관찰: 이미지 {len(images)}장, alt {sum(1 for i in images if i.get('alt'))}장, 시각 자료의 유형 다양성은 "
+                f"{'충분' if len(images) >= 4 else '제한적'}입니다. "
+                "해석: 콘텐츠 신뢰는 텍스트보다 시각 증거의 질에서 먼저 형성되므로, 컷 구성의 목적성이 중요합니다."
             ),
+            "핵심 장면(전/중/후 비교컷) 3세트를 고정 템플릿으로 넣고, 각 이미지 캡션에 맥락 1문장씩 추가하세요.",
         ),
         BLOG_RUBRIC[1]: build_item_review(
             BLOG_RUBRIC[1],
             scores[BLOG_RUBRIC[1]],
             (
-                f"본문 약 {words}단어, 참고 링크 {links}개, 주관/객관 단어 균형을 근거로"
-                " 개인 경험과 정보 전달의 균형도를 판정했습니다."
+                f"관찰: 본문 약 {words}단어, 근거 링크 {links}개, 주관 단서 {opinion_hits}건/근거 단서 {evidence_hits}건. "
+                "해석: 경험 서사와 검증 정보가 균형을 이루면 팔로워 신뢰 유지율이 높아집니다."
             ),
+            "주관 문단 뒤에 반드시 객관 근거(수치·출처·비교축) 1개를 붙이는 '1:1 근거 매칭' 구조로 재편해 보세요.",
         ),
         BLOG_RUBRIC[2]: build_item_review(
             BLOG_RUBRIC[2],
             scores[BLOG_RUBRIC[2]],
-            "문장 길이 분포, 전개 접속어(처음/다음/결론) 존재, 도입-전개-정리 흐름의 일관성을 종합했습니다.",
+            (
+                f"관찰: 문장 수 {sentence_count}개, 평균 문장 길이 {avg_len:.1f}자, 감정 표현 {emotional_hits}건. "
+                "해석: 내러티브는 정보 전달보다 '긴장-해소' 리듬이 핵심이며, 감정 전환 지점이 CTA 전환율에 영향을 줍니다."
+            ),
+            "도입(문제 제기) - 전개(근거 2개) - 전환(개인 인사이트) - 결론(행동 제안) 4단 구조를 고정하세요.",
         ),
         BLOG_RUBRIC[3]: build_item_review(
             BLOG_RUBRIC[3],
             scores[BLOG_RUBRIC[3]],
-            "반복 문장부호, 비정상 공백, 자모 반복 패턴과 문장 가독성을 함께 반영해 표기 안정성을 계산했습니다.",
+            (
+                "관찰: 표기 오류 패턴(공백/중복 부호/자모 반복)을 기반으로 가독성을 검토했습니다. "
+                "해석: 표기 안정성은 전문성의 최소 신뢰장치로, 낮은 오류율은 체류시간과 공유 확률을 함께 개선합니다."
+            ),
+            "최종 발행 전 '소리내어 읽기 1회 + 맞춤법 검사 1회'를 필수 워크플로우로 고정하세요.",
         ),
         BLOG_RUBRIC[4]: build_item_review(
             BLOG_RUBRIC[4],
             scores[BLOG_RUBRIC[4]],
             (
-                f"숫자/날짜/출처 단서, 링크 {links}개, JSON-LD {json_ld_count}개를 근거로"
-                " 검증 가능한 정보의 비율을 평가했습니다."
+                f"관찰: 검증 단서(링크 {links}개, 구조화데이터 {json_ld_count}개, 사실 단어 {evidence_hits}건)를 확인했습니다. "
+                "해석: 사실성은 단순 수치 개수가 아니라 '추적 가능한 근거 체인'이 있는지가 핵심입니다."
             ),
+            "핵심 주장 3개에 대해 출처 URL·발행일·비교 기준을 한 줄 표로 제시해 검증 가능성을 명시하세요.",
         ),
     }
 
@@ -420,38 +477,47 @@ def build_insta_reviews(scores: Dict[str, float], parsed: Dict[str, object]) -> 
     title = str(parsed.get("title") or "")
     desc = str(parsed.get("description") or "")
     text_hint = coalesce(desc, title)
+    hook_hits = keyword_hits(text_hint, ["new", "첫", "한정", "공개", "단독", "비밀", "드디어"])
+    style_hits = keyword_hits(str(parsed.get("text", "")), ["무드", "룩", "톤", "감성", "필름", "시네마"])
+    hashtag_density = ratio(len(hashtags), max(1, int(parsed.get("word_count", 1))))
+
     return {
         INSTAGRAM_RUBRIC[0]: build_item_review(
             INSTAGRAM_RUBRIC[0],
             scores[INSTAGRAM_RUBRIC[0]],
             (
-                f"이미지 {len(images)}장의 수량, 해상도 단서, 대체텍스트 구성도를 종합해"
-                " 프레이밍/피사체 선명도를 간접 추정했습니다."
+                f"관찰: 이미지 {len(images)}장, 피사체 프레이밍 단서는 {'충분' if len(images) >= 3 else '제한적'}입니다. "
+                "해석: 인플루언서 피드는 피사체 분리도와 시선 유도가 브랜드 인지 효율을 좌우합니다."
             ),
+            "대표컷 1장(강한 훅) + 정보컷 2장(디테일/사용맥락) 조합으로 캐러셀 구조를 표준화하세요.",
         ),
         INSTAGRAM_RUBRIC[1]: build_item_review(
             INSTAGRAM_RUBRIC[1],
             scores[INSTAGRAM_RUBRIC[1]],
             (
-                "인물/셀카 키워드, 포스트 설명문, 이미지 설명을 결합해"
-                " 인물 중심 연출의 일관성과 전달력을 판단했습니다."
+                f"관찰: 인물 연출 단서(style 키워드 {style_hits}건, 훅 키워드 {hook_hits}건)를 확인했습니다. "
+                "해석: 이 항목은 외모 자체 평가가 아니라 인물 비주얼 연출의 완성도(표정·구도·무드 일치)를 평가합니다."
             ),
+            "표정-포즈-배경 톤을 하나의 콘셉트 키워드(예: clean/urban/warm)로 고정해 피드 일관성을 높이세요.",
         ),
         INSTAGRAM_RUBRIC[2]: build_item_review(
             INSTAGRAM_RUBRIC[2],
             scores[INSTAGRAM_RUBRIC[2]],
             (
-                f"해시태그 {len(hashtags)}개의 고유 비율과 길이, 범용 태그 편중도를 바탕으로"
-                " 검색 경쟁 회피 가능성을 평가했습니다."
+                f"관찰: 해시태그 {len(hashtags)}개, 본문 대비 밀도 {hashtag_density:.2f}, 고유도 중심으로 분석했습니다. "
+                "해석: 희소성은 노출량보다 타깃 적합도와 탐색 의도 일치도가 중요합니다."
             ),
+            "대형 태그 2개 + 중간 태그 5개 + 니치 태그 3개로 계층형 해시태그 묶음을 구성해 테스트하세요.",
         ),
         INSTAGRAM_RUBRIC[3]: build_item_review(
             INSTAGRAM_RUBRIC[3],
             scores[INSTAGRAM_RUBRIC[3]],
             (
-                f"좋아요 {likes if likes is not None else '미확인'}, 댓글 {comments if comments is not None else '미확인'}를"
-                f" 반영했고, 설명문 단서('{snippet(text_hint, 40)}')와의 적합도도 참고했습니다."
+                f"관찰: 좋아요 {likes if likes is not None else '미확인'}, 댓글 {comments if comments is not None else '미확인'}, "
+                f"설명문 훅 '{snippet(text_hint, 40)}'를 함께 비교했습니다. "
+                "해석: 반응 품질은 수치 자체보다 댓글의 대화성/저장 유도 구조와 강하게 연결됩니다."
             ),
+            "캡션 말미에 질문형 CTA 1개와 저장 유도 문장 1개를 넣어 댓글·저장률을 분리 관리하세요.",
         ),
     }
 
@@ -594,8 +660,8 @@ def build_summary(content_type: str, avg: float, scores: Dict[str, float]) -> st
     strongest = max(scores, key=scores.get)
 
     return (
-        f"Sally 평가 결과(요청하신 기준 직접 적용), {tone} "
-        f"강점은 '{strongest}' 항목이고 개선 우선순위는 '{weakest}' 항목입니다. "
+        f"Sally(전문 인플루언서·콘텐츠 전략가) 평가 결과, {tone} "
+        f"현재 강점은 '{strongest}'이며, 성장 여지가 가장 큰 축은 '{weakest}'입니다. "
         f"유형: {content_type}"
     )
 
