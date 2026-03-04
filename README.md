@@ -23,9 +23,11 @@ streamlit run streamlit_app.py
 5. `Deploy` 실행
 
 ## Sally 직접 평가(LLM) 사용
-- 환경변수 `OPENAI_API_KEY`가 설정되면, Sally가 URL 콘텐츠를 직접 분석해 기준별 심사평을 생성합니다.
-- 이때 결과 화면에 `Token Usage` 패널이 표시됩니다.
-- 키가 없거나 호출 실패 시 로컬 휴리스틱 평가로 자동 폴백됩니다.
+- 기본 모드는 `로컬 평가`이며 추가 API 과금이 없습니다.
+- API 직접 평가를 쓰려면 아래 환경변수를 함께 설정하세요.
+  - `SALLY_EVAL_MODE=api`
+  - `OPENAI_API_KEY=...`
+- API 모드일 때 결과 화면 `Token Usage`에 실제 토큰 사용량이 표시됩니다.
 
 ## 평가 기준
 ### 1) 블로그 포스팅

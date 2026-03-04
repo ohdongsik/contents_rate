@@ -233,6 +233,11 @@ def build_token_usage(mode: str, prompt_tokens: int, completion_tokens: int) -> 
     }
 
 
+def use_api_evaluator() -> bool:
+    # Default is local-only mode to avoid extra API billing.
+    return os.environ.get("SALLY_EVAL_MODE", "local").strip().lower() == "api"
+
+
 def parse_common(html_text: str) -> Dict[str, object]:
     if not html_text:
         return {
@@ -818,7 +823,9 @@ def evaluate(content_type: str, url: str) -> EvalResult:
     html_text, notes = fetch_html(url)
     parsed = parse_common(html_text)
     dashboard = build_dashboard(parsed)
-    ai_result = request_sally_ai_review(content_type, url, parsed, notes)
+    ai_result = None
+    if use_api_evaluator():
+        ai_result = request_sally_ai_review(content_type, url, parsed, notes)
 
     if content_type == "instagram":
         if ai_result is not None:
@@ -837,7 +844,7 @@ def evaluate(content_type: str, url: str) -> EvalResult:
         overview = build_insta_overview(parsed)
         avg = round_half(sum(scores.values()) / len(scores))
         summary = build_summary("인스타그램 피드", avg, scores)
-        token_usage = build_token_usage("로컬 휴리스틱 평가", 0, 0)
+        token_usage = build_token_usage("로컬 평가(추가 API 과금 없음)", 0, 0)
         return EvalResult("인스타그램 피드", url, scores, reviews, overview, dashboard, token_usage, avg, summary, notes)
 
     if ai_result is not None:
@@ -857,7 +864,7 @@ def evaluate(content_type: str, url: str) -> EvalResult:
     overview = build_blog_overview(parsed)
     avg = round_half(sum(scores.values()) / len(scores))
     summary = build_summary("네이버 블로그 포스팅", avg, scores)
-    token_usage = build_token_usage("로컬 휴리스틱 평가", 0, 0)
+    token_usage = build_token_usage("로컬 평가(추가 API 과금 없음)", 0, 0)
     return EvalResult("네이버 블로그 포스팅", url, scores, reviews, overview, dashboard, token_usage, avg, summary, notes)
 
 
