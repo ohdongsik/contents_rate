@@ -49,6 +49,7 @@ class EvalResult:
     scores: Dict[str, float]
     reviews: Dict[str, str]
     overview: List[str]
+    dashboard: Dict[str, str]
     average: float
     summary: str
     notes: List[str]
@@ -228,6 +229,8 @@ def parse_common(html_text: str) -> Dict[str, object]:
             "description": "",
             "json_ld_count": 0,
             "word_count": 0,
+            "video_embedded": False,
+            "map_embedded": False,
         }
 
     text = strip_tags(html_text)
@@ -237,6 +240,20 @@ def parse_common(html_text: str) -> Dict[str, object]:
     likes = extract_count(html_text, ["like_count", "likes", "좋아요"])
     comments = extract_count(html_text, ["comment_count", "comments", "댓글"])
     json_ld = extract_json_ld_chunks(html_text)
+    video_embedded = bool(
+        re.search(
+            r"(youtube\.com/embed|player\.vimeo\.com|<video\b|<iframe[^>]+video)",
+            html_text,
+            flags=re.IGNORECASE,
+        )
+    )
+    map_embedded = bool(
+        re.search(
+            r"(maps\.google\.com|openstreetmap|kakaomap|naver\.com\/map|<iframe[^>]+map)",
+            html_text,
+            flags=re.IGNORECASE,
+        )
+    )
 
     title_match = re.search(r"<title>([\s\S]*?)</title>", html_text, flags=re.IGNORECASE)
     title_tag = html.unescape(title_match.group(1)).strip() if title_match else ""
@@ -276,6 +293,23 @@ def parse_common(html_text: str) -> Dict[str, object]:
         "description": description,
         "json_ld_count": len(json_ld),
         "word_count": len(text.split()),
+        "video_embedded": video_embedded,
+        "map_embedded": map_embedded,
+    }
+
+
+def build_dashboard(parsed: Dict[str, object]) -> Dict[str, str]:
+    words = int(parsed.get("word_count", 0))
+    images = len(parsed.get("images", []))
+    links = int(parsed.get("links", 0))
+    video = bool(parsed.get("video_embedded", False))
+    map_data = bool(parsed.get("map_embedded", False))
+    return {
+        "포함된 텍스트 수": f"{words}",
+        "이미지 수": f"{images}",
+        "삽입된 링크 수": f"{links}",
+        "동영상 삽입 여부": "예" if video else "아니오",
+        "지도 데이터 삽입 여부": "예" if map_data else "아니오",
     }
 
 
@@ -669,6 +703,7 @@ def build_summary(content_type: str, avg: float, scores: Dict[str, float]) -> st
 def evaluate(content_type: str, url: str) -> EvalResult:
     html_text, notes = fetch_html(url)
     parsed = parse_common(html_text)
+    dashboard = build_dashboard(parsed)
 
     if content_type == "instagram":
         scores = {
@@ -681,7 +716,7 @@ def evaluate(content_type: str, url: str) -> EvalResult:
         overview = build_insta_overview(parsed)
         avg = round_half(sum(scores.values()) / len(scores))
         summary = build_summary("인스타그램 피드", avg, scores)
-        return EvalResult("인스타그램 피드", url, scores, reviews, overview, avg, summary, notes)
+        return EvalResult("인스타그램 피드", url, scores, reviews, overview, dashboard, avg, summary, notes)
 
     scores = {
         BLOG_RUBRIC[0]: round_half(score_image_quality(parsed["images"])),
@@ -694,7 +729,7 @@ def evaluate(content_type: str, url: str) -> EvalResult:
     overview = build_blog_overview(parsed)
     avg = round_half(sum(scores.values()) / len(scores))
     summary = build_summary("네이버 블로그 포스팅", avg, scores)
-    return EvalResult("네이버 블로그 포스팅", url, scores, reviews, overview, avg, summary, notes)
+    return EvalResult("네이버 블로그 포스팅", url, scores, reviews, overview, dashboard, avg, summary, notes)
 
 
 def render_page(result: EvalResult | None = None, error: str = "") -> str:
@@ -756,6 +791,10 @@ def render_page(result: EvalResult | None = None, error: str = "") -> str:
         )
         overview_items = "".join(f"<li>{html.escape(item)}</li>" for item in result.overview)
         overview_block = f"<div class='overview'><h3>콘텐츠 요약정보</h3><ul>{overview_items}</ul></div>"
+        dashboard_items = "".join(
+            f"<li><strong>{html.escape(k)}:</strong> {html.escape(v)}</li>" for k, v in result.dashboard.items()
+        )
+        dashboard_block = f"<div class='overview'><h3>포스팅 컨디션 대시보드</h3><ul>{dashboard_items}</ul></div>"
         notes_block = ""
         if result.notes:
             notes_items = "".join(f"<li>{html.escape(n)}</li>" for n in result.notes)
@@ -766,6 +805,7 @@ def render_page(result: EvalResult | None = None, error: str = "") -> str:
           <h2>평가 결과</h2>
           <p><strong>유형:</strong> {html.escape(result.content_type)}</p>
           <p><strong>URL:</strong> <a href='{html.escape(result.url)}' target='_blank'>{html.escape(result.url)}</a></p>
+          {dashboard_block}
           {overview_block}
           <table>
             <thead><tr><th>평가 항목 및 심사평</th><th>별점</th></tr></thead>

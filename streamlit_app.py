@@ -32,6 +32,14 @@ if run:
         st.write(f"**유형:** {result.content_type}")
         st.write(f"**URL:** {result.url}")
 
+        st.markdown("### 포스팅 컨디션 대시보드")
+        d1, d2, d3, d4, d5 = st.columns(5)
+        d1.metric("텍스트 수", result.dashboard.get("포함된 텍스트 수", "0"))
+        d2.metric("이미지 수", result.dashboard.get("이미지 수", "0"))
+        d3.metric("링크 수", result.dashboard.get("삽입된 링크 수", "0"))
+        d4.metric("동영상", result.dashboard.get("동영상 삽입 여부", "아니오"))
+        d5.metric("지도 데이터", result.dashboard.get("지도 데이터 삽입 여부", "아니오"))
+
         st.markdown("### 콘텐츠 요약정보")
         for item in result.overview:
             st.markdown(f"- {item}")
