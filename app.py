@@ -375,6 +375,24 @@ def build_item_review(item: str, score: float, basis: str, action: str = "") -> 
     return core
 
 
+def compose_expert_review(
+    score: float,
+    strengths: List[str],
+    weaknesses: List[str],
+    feedback: List[str],
+) -> str:
+    label = score_label(score)
+    s = "; ".join(strengths) if strengths else "강점 단서가 제한적입니다."
+    w = "; ".join(weaknesses) if weaknesses else "뚜렷한 약점이 관찰되지 않았습니다."
+    f = "; ".join(feedback) if feedback else "현 구조를 유지하며 A/B 테스트를 권장합니다."
+    return (
+        f"{label} ({score:.1f}/5). "
+        f"장점: {s} "
+        f"단점: {w} "
+        f"피드백: {f}"
+    )
+
+
 def infer_audience(text: str, hashtags: List[str]) -> str:
     hobby = keyword_hits(text, ["후기", "리뷰", "맛집", "여행", "카페", "OOTD", "데일리"])
     pro = keyword_hits(text, ["분석", "비교", "가이드", "전략", "인사이트", "트렌드"])
@@ -476,51 +494,74 @@ def build_blog_reviews(scores: Dict[str, float], parsed: Dict[str, object]) -> D
     emotional_hits = keyword_hits(text, ["감동", "만족", "아쉬움", "행복", "놀라", "최고"])
 
     return {
-        BLOG_RUBRIC[0]: build_item_review(
-            BLOG_RUBRIC[0],
+        BLOG_RUBRIC[0]: compose_expert_review(
             scores[BLOG_RUBRIC[0]],
-            (
-                f"관찰: 이미지 {len(images)}장, alt {sum(1 for i in images if i.get('alt'))}장, 시각 자료의 유형 다양성은 "
-                f"{'충분' if len(images) >= 4 else '제한적'}입니다. "
-                "해석: 콘텐츠 신뢰는 텍스트보다 시각 증거의 질에서 먼저 형성되므로, 컷 구성의 목적성이 중요합니다."
-            ),
-            "핵심 장면(전/중/후 비교컷) 3세트를 고정 템플릿으로 넣고, 각 이미지 캡션에 맥락 1문장씩 추가하세요.",
+            strengths=[
+                f"이미지 {len(images)}장으로 시각 근거를 제시함" if len(images) > 0 else "이미지 확보가 거의 없음",
+                f"alt 텍스트 {sum(1 for i in images if i.get('alt'))}장으로 접근성 단서가 있음" if sum(1 for i in images if i.get("alt")) > 0 else "alt 기반 맥락 설명이 부족함",
+            ],
+            weaknesses=[
+                "피사체/구도별 분류가 약해 메시지 전달력이 떨어질 수 있음" if len(images) < 4 else "이미지 간 역할 분담이 일부 중복됨",
+            ],
+            feedback=[
+                "대표컷-근거컷-결과컷 3단 카드 구성을 고정해 설득력을 높이세요",
+                "각 이미지 하단에 맥락 캡션 1문장을 추가하세요",
+            ],
         ),
-        BLOG_RUBRIC[1]: build_item_review(
-            BLOG_RUBRIC[1],
+        BLOG_RUBRIC[1]: compose_expert_review(
             scores[BLOG_RUBRIC[1]],
-            (
-                f"관찰: 본문 약 {words}단어, 근거 링크 {links}개, 주관 단서 {opinion_hits}건/근거 단서 {evidence_hits}건. "
-                "해석: 경험 서사와 검증 정보가 균형을 이루면 팔로워 신뢰 유지율이 높아집니다."
-            ),
-            "주관 문단 뒤에 반드시 객관 근거(수치·출처·비교축) 1개를 붙이는 '1:1 근거 매칭' 구조로 재편해 보세요.",
+            strengths=[
+                f"주관 단서 {opinion_hits}건으로 경험 기반 서사가 존재함" if opinion_hits > 0 else "주관 경험 어조가 약함",
+                f"근거 단서 {evidence_hits}건으로 검증 시도가 확인됨" if evidence_hits > 0 else "객관 근거 표현이 희소함",
+            ],
+            weaknesses=[
+                f"근거 링크 {links}개로 외부 검증 연결성이 낮음" if links < 2 else "링크는 있으나 비교축이 명시되지 않음",
+            ],
+            feedback=[
+                "주관 결론 문단 바로 아래에 객관 근거 1개를 반드시 연결하세요",
+                "비교 기준(가격/시간/효율)을 문장 내 명시해 판단 기준을 고정하세요",
+            ],
         ),
-        BLOG_RUBRIC[2]: build_item_review(
-            BLOG_RUBRIC[2],
+        BLOG_RUBRIC[2]: compose_expert_review(
             scores[BLOG_RUBRIC[2]],
-            (
-                f"관찰: 문장 수 {sentence_count}개, 평균 문장 길이 {avg_len:.1f}자, 감정 표현 {emotional_hits}건. "
-                "해석: 내러티브는 정보 전달보다 '긴장-해소' 리듬이 핵심이며, 감정 전환 지점이 CTA 전환율에 영향을 줍니다."
-            ),
-            "도입(문제 제기) - 전개(근거 2개) - 전환(개인 인사이트) - 결론(행동 제안) 4단 구조를 고정하세요.",
+            strengths=[
+                f"문장 수 {sentence_count}개로 기본 전개량 확보" if sentence_count > 6 else "문장량이 적어 흐름 완성도가 낮음",
+                f"감정 단서 {emotional_hits}건으로 몰입 포인트 존재" if emotional_hits > 0 else "정서적 전환 포인트가 제한적임",
+            ],
+            weaknesses=[
+                f"평균 문장 길이 {avg_len:.1f}자로 리듬 편차가 큼" if avg_len > 80 or avg_len < 18 else "문장 리듬은 비교적 안정적이나 훅이 약함",
+            ],
+            feedback=[
+                "도입(문제)-전개(근거2)-전환(인사이트)-결론(행동)의 4단 템플릿을 반복 적용하세요",
+                "첫 3문장 안에 독자 효익 문장을 배치해 이탈을 줄이세요",
+            ],
         ),
-        BLOG_RUBRIC[3]: build_item_review(
-            BLOG_RUBRIC[3],
+        BLOG_RUBRIC[3]: compose_expert_review(
             scores[BLOG_RUBRIC[3]],
-            (
-                "관찰: 표기 오류 패턴(공백/중복 부호/자모 반복)을 기반으로 가독성을 검토했습니다. "
-                "해석: 표기 안정성은 전문성의 최소 신뢰장치로, 낮은 오류율은 체류시간과 공유 확률을 함께 개선합니다."
-            ),
-            "최종 발행 전 '소리내어 읽기 1회 + 맞춤법 검사 1회'를 필수 워크플로우로 고정하세요.",
+            strengths=[
+                "기본 가독성은 유지됨",
+                "문장 단위 정보 전달이 비교적 명확함",
+            ],
+            weaknesses=[
+                "오탈자/공백 오류가 누적되면 전문성 인식이 급격히 하락함",
+            ],
+            feedback=[
+                "발행 전 맞춤법 검사와 소리내어 읽기 검수를 체크리스트화하세요",
+                "긴 문장을 2문장으로 분할해 리듬을 확보하세요",
+            ],
         ),
-        BLOG_RUBRIC[4]: build_item_review(
-            BLOG_RUBRIC[4],
+        BLOG_RUBRIC[4]: compose_expert_review(
             scores[BLOG_RUBRIC[4]],
-            (
-                f"관찰: 검증 단서(링크 {links}개, 구조화데이터 {json_ld_count}개, 사실 단어 {evidence_hits}건)를 확인했습니다. "
-                "해석: 사실성은 단순 수치 개수가 아니라 '추적 가능한 근거 체인'이 있는지가 핵심입니다."
-            ),
-            "핵심 주장 3개에 대해 출처 URL·발행일·비교 기준을 한 줄 표로 제시해 검증 가능성을 명시하세요.",
+            strengths=[
+                f"검증 단서(링크 {links}개, JSON-LD {json_ld_count}개)가 일부 존재함" if links + json_ld_count > 0 else "검증 가능한 데이터 노출이 매우 제한적임",
+            ],
+            weaknesses=[
+                f"사실 단어 {evidence_hits}건으로 근거 체인이 약함" if evidence_hits < 3 else "근거는 있으나 출처 표기 형식이 일관되지 않음",
+            ],
+            feedback=[
+                "핵심 주장 3개를 표로 분리하고 출처 URL/발행일/비교기준을 함께 표기하세요",
+                "인용 데이터는 최신성 기준(발행일)까지 명시하세요",
+            ],
         ),
     }
 
@@ -538,42 +579,59 @@ def build_insta_reviews(scores: Dict[str, float], parsed: Dict[str, object]) -> 
     hashtag_density = ratio(len(hashtags), max(1, int(parsed.get("word_count", 1))))
 
     return {
-        INSTAGRAM_RUBRIC[0]: build_item_review(
-            INSTAGRAM_RUBRIC[0],
+        INSTAGRAM_RUBRIC[0]: compose_expert_review(
             scores[INSTAGRAM_RUBRIC[0]],
-            (
-                f"관찰: 이미지 {len(images)}장, 피사체 프레이밍 단서는 {'충분' if len(images) >= 3 else '제한적'}입니다. "
-                "해석: 인플루언서 피드는 피사체 분리도와 시선 유도가 브랜드 인지 효율을 좌우합니다."
-            ),
-            "대표컷 1장(강한 훅) + 정보컷 2장(디테일/사용맥락) 조합으로 캐러셀 구조를 표준화하세요.",
+            strengths=[
+                f"이미지 {len(images)}장으로 기본 비주얼 세트를 구성함" if len(images) > 0 else "이미지 데이터가 확보되지 않음",
+                "피사체 중심 구성 가능성이 확인됨" if len(images) >= 3 else "피사체 시선 유도 정보가 제한됨",
+            ],
+            weaknesses=[
+                "캐러셀 내 역할 분화(훅컷/정보컷/전환컷)가 부족할 가능성",
+            ],
+            feedback=[
+                "첫 컷은 훅, 두 번째 컷은 디테일, 세 번째 컷은 사용 맥락으로 분리하세요",
+                "배경 대비를 키워 피사체 분리도를 높이세요",
+            ],
         ),
-        INSTAGRAM_RUBRIC[1]: build_item_review(
-            INSTAGRAM_RUBRIC[1],
+        INSTAGRAM_RUBRIC[1]: compose_expert_review(
             scores[INSTAGRAM_RUBRIC[1]],
-            (
-                f"관찰: 인물 연출 단서(style 키워드 {style_hits}건, 훅 키워드 {hook_hits}건)를 확인했습니다. "
-                "해석: 이 항목은 외모 자체 평가가 아니라 인물 비주얼 연출의 완성도(표정·구도·무드 일치)를 평가합니다."
-            ),
-            "표정-포즈-배경 톤을 하나의 콘셉트 키워드(예: clean/urban/warm)로 고정해 피드 일관성을 높이세요.",
+            strengths=[
+                f"스타일 단서 {style_hits}건으로 콘셉트 의도가 드러남" if style_hits > 0 else "스타일 키워드 단서가 적음",
+                f"훅 키워드 {hook_hits}건으로 주목 유도 가능" if hook_hits > 0 else "초반 주목 장치가 약함",
+            ],
+            weaknesses=[
+                "인물 연출 톤(표정/포즈/배경) 일관성이 낮으면 브랜딩이 분산됨",
+            ],
+            feedback=[
+                "한 포스트당 콘셉트 키워드를 1개로 제한해 톤을 고정하세요",
+                "인물 컷과 제품 컷의 노출 비율을 7:3으로 실험해 보세요",
+            ],
         ),
-        INSTAGRAM_RUBRIC[2]: build_item_review(
-            INSTAGRAM_RUBRIC[2],
+        INSTAGRAM_RUBRIC[2]: compose_expert_review(
             scores[INSTAGRAM_RUBRIC[2]],
-            (
-                f"관찰: 해시태그 {len(hashtags)}개, 본문 대비 밀도 {hashtag_density:.2f}, 고유도 중심으로 분석했습니다. "
-                "해석: 희소성은 노출량보다 타깃 적합도와 탐색 의도 일치도가 중요합니다."
-            ),
-            "대형 태그 2개 + 중간 태그 5개 + 니치 태그 3개로 계층형 해시태그 묶음을 구성해 테스트하세요.",
+            strengths=[
+                f"해시태그 {len(hashtags)}개로 검색 접점을 확보함" if len(hashtags) > 0 else "해시태그 전략이 비어 있음",
+            ],
+            weaknesses=[
+                f"본문 대비 태그 밀도 {hashtag_density:.2f}로 정밀 타깃 세분화가 부족할 수 있음",
+            ],
+            feedback=[
+                "대형/중형/니치 태그를 2/5/3 비율로 계층화하세요",
+                "성과 낮은 태그는 2주 단위로 교체해 탐색 효율을 개선하세요",
+            ],
         ),
-        INSTAGRAM_RUBRIC[3]: build_item_review(
-            INSTAGRAM_RUBRIC[3],
+        INSTAGRAM_RUBRIC[3]: compose_expert_review(
             scores[INSTAGRAM_RUBRIC[3]],
-            (
-                f"관찰: 좋아요 {likes if likes is not None else '미확인'}, 댓글 {comments if comments is not None else '미확인'}, "
-                f"설명문 훅 '{snippet(text_hint, 40)}'를 함께 비교했습니다. "
-                "해석: 반응 품질은 수치 자체보다 댓글의 대화성/저장 유도 구조와 강하게 연결됩니다."
-            ),
-            "캡션 말미에 질문형 CTA 1개와 저장 유도 문장 1개를 넣어 댓글·저장률을 분리 관리하세요.",
+            strengths=[
+                f"좋아요 {likes if likes is not None else '미확인'}, 댓글 {comments if comments is not None else '미확인'} 데이터로 반응 추세를 확인할 수 있음",
+            ],
+            weaknesses=[
+                "수치가 있어도 저장/공유 유도 문장이 약하면 실제 전환이 낮을 수 있음",
+            ],
+            feedback=[
+                "캡션 말미에 질문형 CTA 1개 + 저장 유도 문장 1개를 고정하세요",
+                f"훅 문구('{snippet(text_hint, 40)}')를 첫 문장으로 끌어올려 클릭률을 개선하세요",
+            ],
         ),
     }
 
@@ -737,6 +795,8 @@ def request_sally_ai_review(
         "당신은 인플루언서/콘텐츠 전략 전문가 Sally다. "
         "입력된 콘텐츠 증거를 기반으로 각 기준별로 1~5점(0.5 단위) 점수와 상세 심사평을 작성한다. "
         "심사평은 항목마다 서로 다른 근거와 개선안을 제시하고, 비슷한 문장 반복을 피한다. "
+        "각 심사평은 반드시 '장점:', '단점:', '피드백:' 3구조를 포함한다. "
+        "사람 대신 심사하는 전문 리뷰어의 어조로 작성한다. "
         "반드시 JSON만 출력한다."
     )
     user_prompt = (
