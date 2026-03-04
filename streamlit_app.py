@@ -167,6 +167,7 @@ html, body, [class*="css"] {
   background: #fff;
 }
 .review-body { margin-top:10px; line-height:1.58; color:#0d0d0d; font-size:0.95rem; }
+.review-body strong { display:inline-block; margin-top:6px; font-size:0.93rem; }
 
 .avg-box, .sum-box {
   margin-top: 12px;
@@ -295,7 +296,8 @@ def render_reviews(result) -> None:
 
     review_cards = []
     for item, score in result.scores.items():
-        review = html.escape(result.reviews.get(item, ""))
+        review_raw = result.reviews.get(item, "")
+        review = format_review_html(review_raw)
         review_cards.append(
             "<div class='review-card'>"
             f"<div class='review-head'><div class='review-title'>{html.escape(item)}</div>"
@@ -320,6 +322,17 @@ def render_notes(result) -> None:
         st.markdown("### 참고")
         for note in result.notes:
             st.warning(note)
+
+
+def format_review_html(text: str) -> str:
+    safe = html.escape(text)
+    safe = safe.replace(" 장점:", "<br/><strong>장점</strong>: ")
+    safe = safe.replace(" 단점:", "<br/><strong>단점</strong>: ")
+    safe = safe.replace(" 피드백:", "<br/><strong>피드백</strong>: ")
+    safe = safe.replace("; ", "<br/>- ")
+    if "<strong>장점</strong>" not in safe and "<strong>단점</strong>" not in safe:
+        return safe
+    return safe
 
 
 inject_styles()

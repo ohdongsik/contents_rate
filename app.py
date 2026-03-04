@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 try:
@@ -80,6 +80,9 @@ def fetch_html(url: str) -> Tuple[str, List[str]]:
         {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
     ]
 
+    final_html = ""
+    final_url = url
+
     if requests is not None:
         for idx, headers in enumerate(attempts, start=1):
             try:
@@ -90,39 +93,70 @@ def fetch_html(url: str) -> Tuple[str, List[str]]:
                     allow_redirects=True,
                 )
                 if resp.ok and resp.text:
-                    return resp.text, notes
+                    final_html = resp.text
+                    final_url = resp.url
+                    break
                 notes.append(f"수집 시도 {idx} 실패(HTTP {resp.status_code})")
             except Exception as exc:
                 notes.append(f"수집 시도 {idx} 실패: {exc}")
             time.sleep(0.3)
 
-    for idx, headers in enumerate(attempts, start=1):
-        try:
-            req = Request(url, headers=headers)
-            with urlopen(req, timeout=12) as resp:
-                raw = resp.read()
-                charset = resp.headers.get_content_charset() or "utf-8"
-                return raw.decode(charset, errors="replace"), notes
-        except Exception as exc:
-            notes.append(f"보조 수집 시도 {idx} 실패: {exc}")
-        time.sleep(0.3)
+    if not final_html:
+        for idx, headers in enumerate(attempts, start=1):
+            try:
+                req = Request(url, headers=headers)
+                with urlopen(req, timeout=12) as resp:
+                    raw = resp.read()
+                    charset = resp.headers.get_content_charset() or "utf-8"
+                    final_html = raw.decode(charset, errors="replace")
+                    final_url = url
+                    break
+            except Exception as exc:
+                notes.append(f"보조 수집 시도 {idx} 실패: {exc}")
+            time.sleep(0.3)
 
-    notes.append("URL 수집 실패로 제한된 평가를 수행했습니다.")
-    return "", notes
+    if not final_html:
+        notes.append("URL 수집 실패로 제한된 평가를 수행했습니다.")
+        return "", notes
+
+    # Naver blog often serves a frameset page; fetch the real PostView document.
+    frame_match = re.search(
+        r'<iframe[^>]+id=["\']mainFrame["\'][^>]+src=["\']([^"\']+)["\']',
+        final_html,
+        flags=re.IGNORECASE,
+    )
+    if frame_match and requests is not None:
+        frame_src = frame_match.group(1)
+        frame_url = urljoin(final_url, frame_src)
+        try:
+            resp2 = requests.get(
+                frame_url,
+                headers={"User-Agent": USER_AGENT, "Accept-Language": "ko-KR,ko;q=0.9"},
+                timeout=12,
+                allow_redirects=True,
+            )
+            if resp2.ok and resp2.text:
+                final_html = resp2.text
+                final_url = resp2.url
+                notes.append("프레임셋 본문(PostView) 페이지를 추가 수집했습니다.")
+        except Exception as exc:
+            notes.append(f"PostView 추가 수집 실패: {exc}")
+
+    return final_html, notes
 
 
 def strip_tags(text: str) -> str:
-    text = re.sub(r"<script[\\s\\S]*?</script>", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"<style[\\s\\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)
     text = html.unescape(text)
-    text = re.sub(r"\\s+", " ", text)
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def parse_images(html_text: str) -> List[Dict[str, object]]:
     images: List[Dict[str, object]] = []
-    img_tags = re.findall(r"<img\\b[^>]*>", html_text, flags=re.IGNORECASE)
+    img_tags = re.findall(r"<img\b[^>]*>", html_text, flags=re.IGNORECASE)
     for tag in img_tags:
         src = extract_attr(tag, "src")
         if not src:
@@ -151,13 +185,23 @@ def parse_images(html_text: str) -> List[Dict[str, object]]:
 
 
 def extract_attr(tag: str, attr: str) -> str | None:
-    pat = re.compile(rf'{attr}\\s*=\\s*["\']([^"\']+)["\']', flags=re.IGNORECASE)
+    pat = re.compile(rf'{attr}\s*=\s*["\']([^"\']+)["\']', flags=re.IGNORECASE)
     m = pat.search(tag)
     return m.group(1).strip() if m else None
 
 
 def parse_links_count(html_text: str) -> int:
-    return len(re.findall(r"<a\\b[^>]*href=", html_text, flags=re.IGNORECASE))
+    hrefs = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\']', html_text, flags=re.IGNORECASE)
+    clean: List[str] = []
+    for href in hrefs:
+        v = href.strip()
+        if not v:
+            continue
+        low = v.lower()
+        if low.startswith("#") or low.startswith("javascript:") or low.startswith("about:blank"):
+            continue
+        clean.append(v)
+    return len(set(clean))
 
 
 def parse_hashtags(text: str) -> List[str]:
@@ -217,6 +261,27 @@ def coalesce(*values: object) -> str:
     return ""
 
 
+def extract_naver_post_body(html_text: str) -> str:
+    # Prefer the real post-view block to avoid counting global navigation/sidebar text.
+    m = re.search(r'<div id="post-view\d+"', html_text, flags=re.IGNORECASE)
+    if m:
+        start = m.start()
+        se_main = re.search(r'<div[^>]+class="[^"]*se-main-container[^"]*"', html_text[start:], flags=re.IGNORECASE)
+        if se_main:
+            start = start + se_main.start()
+        # post_footer appears after the article body area in Naver PostView pages.
+        footer_match = re.search(r'<div[^>]+id="post_footer"', html_text[start:], flags=re.IGNORECASE)
+        if footer_match:
+            end = start + footer_match.start()
+            return html_text[start:end]
+        return html_text[start:]
+    # Fallback to content area block.
+    m2 = re.search(r'<div class="se-main-container"[\s\S]*?</div>\s*</div>', html_text, flags=re.IGNORECASE)
+    if m2:
+        return m2.group(0)
+    return html_text
+
+
 def estimate_tokens(text: str) -> int:
     if not text:
         return 0
@@ -238,7 +303,7 @@ def use_api_evaluator() -> bool:
     return os.environ.get("SALLY_EVAL_MODE", "local").strip().lower() == "api"
 
 
-def parse_common(html_text: str) -> Dict[str, object]:
+def parse_common(html_text: str, source_url: str = "") -> Dict[str, object]:
     if not html_text:
         return {
             "text": "",
@@ -255,33 +320,53 @@ def parse_common(html_text: str) -> Dict[str, object]:
             "map_embedded": False,
         }
 
-    text = strip_tags(html_text)
-    images = parse_images(html_text)
-    links = parse_links_count(html_text)
+    is_naver_blog = "blog.naver.com" in source_url or "PostView.naver" in source_url or "blog.naver.com" in html_text
+    base_html = extract_naver_post_body(html_text) if is_naver_blog else html_text
+
+    text = strip_tags(base_html)
+    images = parse_images(base_html)
+    links = parse_links_count(base_html)
+    if is_naver_blog:
+        images = [
+            img
+            for img in images
+            if any(
+                key in str(img.get("src", "")).lower()
+                for key in [
+                    "postfiles.pstatic.net",
+                    "blogfiles.pstatic.net",
+                    "blogthumb.pstatic.net",
+                    "mblogvideo-phinf.pstatic.net",
+                    "phinf.pstatic.net/image.nmv",
+                ]
+            )
+        ]
     hashtags = parse_hashtags(text)
-    likes = extract_count(html_text, ["like_count", "likes", "좋아요"])
-    comments = extract_count(html_text, ["comment_count", "comments", "댓글"])
-    json_ld = extract_json_ld_chunks(html_text)
+    likes = extract_count(base_html, ["like_count", "likes", "좋아요"])
+    comments = extract_count(base_html, ["comment_count", "comments", "댓글"])
+    json_ld = extract_json_ld_chunks(base_html)
     video_embedded = bool(
         re.search(
-            r"(youtube\.com/embed|player\.vimeo\.com|<video\b|<iframe[^>]+video)",
-            html_text,
+            r"(youtube\.com/embed|player\.vimeo\.com|<video\b|<iframe[^>]+video|v2_video|se-video|_gifmp4|movie_count\":\s*[1-9])",
+            base_html,
             flags=re.IGNORECASE,
         )
     )
     map_embedded = bool(
         re.search(
-            r"(maps\.google\.com|openstreetmap|kakaomap|naver\.com\/map|<iframe[^>]+map)",
-            html_text,
+            r"(maps\.google\.com|openstreetmap|kakaomap|naver\.com\/map|<iframe[^>]+map|\"type\":\"v2_map\"|class=\"se-map|static\.map|korea_map\":\s*[1-9]|data-linktype=\"map\")",
+            base_html,
             flags=re.IGNORECASE,
         )
     )
 
     title_match = re.search(r"<title>([\s\S]*?)</title>", html_text, flags=re.IGNORECASE)
     title_tag = html.unescape(title_match.group(1)).strip() if title_match else ""
-    title = coalesce(extract_meta(html_text, "og:title"), title_tag)
+    title = coalesce(extract_meta(base_html, "og:title"), extract_meta(html_text, "og:title"), title_tag)
     description = coalesce(
+        extract_meta(base_html, "og:description"),
         extract_meta(html_text, "og:description"),
+        extract_meta(base_html, "description"),
         extract_meta(html_text, "description"),
     )
 
@@ -300,9 +385,9 @@ def parse_common(html_text: str) -> Dict[str, object]:
     hashtags = list(dict.fromkeys(hashtags))[:80]
 
     if likes is None:
-        likes = extract_count(html_text, ["edge_media_preview_like", "likeCount", "reaction_count"])
+        likes = extract_count(base_html, ["edge_media_preview_like", "likeCount", "reaction_count"])
     if comments is None:
-        comments = extract_count(html_text, ["edge_media_to_comment", "commentCount"])
+        comments = extract_count(base_html, ["edge_media_to_comment", "commentCount"])
 
     return {
         "text": text,
@@ -315,6 +400,7 @@ def parse_common(html_text: str) -> Dict[str, object]:
         "description": description,
         "json_ld_count": len(json_ld),
         "word_count": len(text.split()),
+        "char_count": len(re.sub(r"\s+", "", text)),
         "video_embedded": video_embedded,
         "map_embedded": map_embedded,
     }
@@ -322,12 +408,13 @@ def parse_common(html_text: str) -> Dict[str, object]:
 
 def build_dashboard(parsed: Dict[str, object]) -> Dict[str, str]:
     words = int(parsed.get("word_count", 0))
+    chars = int(parsed.get("char_count", 0))
     images = len(parsed.get("images", []))
     links = int(parsed.get("links", 0))
     video = bool(parsed.get("video_embedded", False))
     map_data = bool(parsed.get("map_embedded", False))
     return {
-        "포함된 텍스트 수": f"{words}",
+        "포함된 텍스트 수": f"{chars}자 / {words}단어",
         "이미지 수": f"{images}",
         "삽입된 링크 수": f"{links}",
         "동영상 삽입 여부": "예" if video else "아니오",
@@ -701,7 +788,7 @@ def score_blog_spelling(text: str) -> float:
     if not text:
         return 2.2
 
-    weird_spaces = len(re.findall(r"\\s{2,}", text))
+    weird_spaces = len(re.findall(r"\s{2,}", text))
     repeated_punct = len(re.findall(r"[!?.,]{3,}", text))
     typo_like = len(re.findall(r"[ㄱ-ㅎㅏ-ㅣ]{3,}", text))
 
@@ -714,8 +801,8 @@ def score_blog_factuality(text: str, links: int) -> float:
     if not text:
         return 2.0
 
-    date_hits = len(re.findall(r"20\\d{2}[./년-]\\s?\\d{1,2}", text))
-    number_hits = len(re.findall(r"\\d+[.,]?\\d*", text))
+    date_hits = len(re.findall(r"20\d{2}[./년-]\s?\d{1,2}", text))
+    number_hits = len(re.findall(r"\d+[.,]?\d*", text))
     source_words = ["출처", "통계", "공식", "자료", "리포트", "논문"]
     source_hits = sum(1 for w in source_words if w in text)
 
@@ -881,7 +968,7 @@ def build_summary(content_type: str, avg: float, scores: Dict[str, float]) -> st
 
 def evaluate(content_type: str, url: str) -> EvalResult:
     html_text, notes = fetch_html(url)
-    parsed = parse_common(html_text)
+    parsed = parse_common(html_text, source_url=url)
     dashboard = build_dashboard(parsed)
     ai_result = None
     if use_api_evaluator():
