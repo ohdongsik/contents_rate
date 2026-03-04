@@ -9,7 +9,7 @@ import sys
 import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
@@ -50,6 +50,7 @@ class EvalResult:
     reviews: Dict[str, str]
     overview: List[str]
     dashboard: Dict[str, str]
+    token_usage: Dict[str, str]
     average: float
     summary: str
     notes: List[str]
@@ -214,6 +215,22 @@ def coalesce(*values: object) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, int(len(text) / 4))
+
+
+def build_token_usage(mode: str, prompt_tokens: int, completion_tokens: int) -> Dict[str, str]:
+    total = prompt_tokens + completion_tokens
+    return {
+        "평가 방식": mode,
+        "프롬프트 토큰": str(prompt_tokens),
+        "응답 토큰": str(completion_tokens),
+        "총 토큰": str(total),
+    }
 
 
 def parse_common(html_text: str) -> Dict[str, object]:
@@ -682,6 +699,103 @@ def score_insta_engagement(likes: int | None, comments: int | None) -> float:
     return clamp_1_5(1.0 + like_part + comment_part)
 
 
+def request_sally_ai_review(
+    content_type: str,
+    url: str,
+    parsed: Dict[str, object],
+    notes: List[str],
+) -> Tuple[Dict[str, float], Dict[str, str], str, Dict[str, str]] | None:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key or requests is None:
+        return None
+
+    rubric = BLOG_RUBRIC if content_type == "blog" else INSTAGRAM_RUBRIC
+    text = str(parsed.get("text", ""))[:6500]
+    payload_for_model = {
+        "url": url,
+        "type": "네이버 블로그 포스팅" if content_type == "blog" else "인스타그램 피드",
+        "title": parsed.get("title", ""),
+        "description": parsed.get("description", ""),
+        "text_excerpt": text,
+        "images_count": len(parsed.get("images", [])),
+        "links_count": parsed.get("links", 0),
+        "hashtags": parsed.get("hashtags", []),
+        "likes": parsed.get("likes"),
+        "comments": parsed.get("comments"),
+        "video_embedded": parsed.get("video_embedded", False),
+        "map_embedded": parsed.get("map_embedded", False),
+        "rubric": rubric,
+    }
+    prompt_json = json.dumps(payload_for_model, ensure_ascii=False)
+
+    system_prompt = (
+        "당신은 인플루언서/콘텐츠 전략 전문가 Sally다. "
+        "입력된 콘텐츠 증거를 기반으로 각 기준별로 1~5점(0.5 단위) 점수와 상세 심사평을 작성한다. "
+        "심사평은 항목마다 서로 다른 근거와 개선안을 제시하고, 비슷한 문장 반복을 피한다. "
+        "반드시 JSON만 출력한다."
+    )
+    user_prompt = (
+        "아래 JSON을 분석해 루브릭별 점수와 심사평을 출력해.\n"
+        "출력 형식(JSON):\n"
+        "{\n"
+        "  \"scores\": {\"<rubric>\": 1.0~5.0},\n"
+        "  \"reviews\": {\"<rubric>\": \"상세 심사평\"},\n"
+        "  \"summary\": \"전반 평가\"\n"
+        "}\n"
+        f"입력 데이터: {prompt_json}"
+    )
+
+    body = {
+        "model": "gpt-4.1-mini",
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.4,
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=40,
+        )
+        if not resp.ok:
+            notes.append(f"Sally AI 평가 호출 실패(HTTP {resp.status_code})")
+            return None
+
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        parsed_json = json.loads(content)
+        ai_scores: Dict[str, float] = {}
+        ai_reviews: Dict[str, str] = {}
+        for r in rubric:
+            raw_score = parsed_json.get("scores", {}).get(r, 2.5)
+            try:
+                val = round_half(clamp_1_5(float(raw_score)))
+            except Exception:
+                val = 2.5
+            ai_scores[r] = val
+
+            raw_review = str(parsed_json.get("reviews", {}).get(r, "")).strip()
+            ai_reviews[r] = raw_review or "근거 데이터가 제한적이어서 보수적으로 평가했습니다."
+
+        summary = str(parsed_json.get("summary", "")).strip() or "전반 평가 요약을 생성하지 못했습니다."
+        usage = data.get("usage", {})
+        prompt_tokens = int(usage.get("prompt_tokens", estimate_tokens(system_prompt + user_prompt)))
+        completion_tokens = int(usage.get("completion_tokens", estimate_tokens(content)))
+        token_usage = build_token_usage("Sally AI 직접 평가", prompt_tokens, completion_tokens)
+        return ai_scores, ai_reviews, summary, token_usage
+    except Exception as exc:
+        notes.append(f"Sally AI 평가 실패: {exc}")
+        return None
+
+
 def build_summary(content_type: str, avg: float, scores: Dict[str, float]) -> str:
     if avg >= 4.3:
         tone = "완성도가 높고 신뢰 가능한 콘텐츠입니다."
@@ -704,8 +818,15 @@ def evaluate(content_type: str, url: str) -> EvalResult:
     html_text, notes = fetch_html(url)
     parsed = parse_common(html_text)
     dashboard = build_dashboard(parsed)
+    ai_result = request_sally_ai_review(content_type, url, parsed, notes)
 
     if content_type == "instagram":
+        if ai_result is not None:
+            scores, reviews, summary, token_usage = ai_result
+            overview = build_insta_overview(parsed)
+            avg = round_half(sum(scores.values()) / len(scores))
+            return EvalResult("인스타그램 피드", url, scores, reviews, overview, dashboard, token_usage, avg, summary, notes)
+
         scores = {
             INSTAGRAM_RUBRIC[0]: round_half(score_insta_subject(parsed["images"])),
             INSTAGRAM_RUBRIC[1]: round_half(score_insta_appearance(parsed["text"], parsed["images"])),
@@ -716,7 +837,14 @@ def evaluate(content_type: str, url: str) -> EvalResult:
         overview = build_insta_overview(parsed)
         avg = round_half(sum(scores.values()) / len(scores))
         summary = build_summary("인스타그램 피드", avg, scores)
-        return EvalResult("인스타그램 피드", url, scores, reviews, overview, dashboard, avg, summary, notes)
+        token_usage = build_token_usage("로컬 휴리스틱 평가", 0, 0)
+        return EvalResult("인스타그램 피드", url, scores, reviews, overview, dashboard, token_usage, avg, summary, notes)
+
+    if ai_result is not None:
+        scores, reviews, summary, token_usage = ai_result
+        overview = build_blog_overview(parsed)
+        avg = round_half(sum(scores.values()) / len(scores))
+        return EvalResult("네이버 블로그 포스팅", url, scores, reviews, overview, dashboard, token_usage, avg, summary, notes)
 
     scores = {
         BLOG_RUBRIC[0]: round_half(score_image_quality(parsed["images"])),
@@ -729,7 +857,8 @@ def evaluate(content_type: str, url: str) -> EvalResult:
     overview = build_blog_overview(parsed)
     avg = round_half(sum(scores.values()) / len(scores))
     summary = build_summary("네이버 블로그 포스팅", avg, scores)
-    return EvalResult("네이버 블로그 포스팅", url, scores, reviews, overview, dashboard, avg, summary, notes)
+    token_usage = build_token_usage("로컬 휴리스틱 평가", 0, 0)
+    return EvalResult("네이버 블로그 포스팅", url, scores, reviews, overview, dashboard, token_usage, avg, summary, notes)
 
 
 def render_page(result: EvalResult | None = None, error: str = "") -> str:
@@ -795,6 +924,10 @@ def render_page(result: EvalResult | None = None, error: str = "") -> str:
             f"<li><strong>{html.escape(k)}:</strong> {html.escape(v)}</li>" for k, v in result.dashboard.items()
         )
         dashboard_block = f"<div class='overview'><h3>포스팅 컨디션 대시보드</h3><ul>{dashboard_items}</ul></div>"
+        token_items = "".join(
+            f"<li><strong>{html.escape(k)}:</strong> {html.escape(v)}</li>" for k, v in result.token_usage.items()
+        )
+        token_block = f"<div class='overview'><h3>토큰 사용량</h3><ul>{token_items}</ul></div>"
         notes_block = ""
         if result.notes:
             notes_items = "".join(f"<li>{html.escape(n)}</li>" for n in result.notes)
@@ -806,6 +939,7 @@ def render_page(result: EvalResult | None = None, error: str = "") -> str:
           <p><strong>유형:</strong> {html.escape(result.content_type)}</p>
           <p><strong>URL:</strong> <a href='{html.escape(result.url)}' target='_blank'>{html.escape(result.url)}</a></p>
           {dashboard_block}
+          {token_block}
           {overview_block}
           <table>
             <thead><tr><th>평가 항목 및 심사평</th><th>별점</th></tr></thead>
